@@ -2,7 +2,6 @@
 Faast Picktask Helper script
 > Browser extension (Tampermonkey userscript) that automates bin lookups and pick task decisions on the FaaST Create Pick Task page.
 
-**Version:** 1.6  
 **Author:** David Thunig ([davthun@amazon.com](mailto:davthun@amazon.com))  
 **Platform:** Tampermonkey (Chrome, Edge, Firefox)  
 **Target page:** [faast.amazon.co.uk/web/picktasks/new](https://faast.amazon.co.uk/web/picktasks/new)
