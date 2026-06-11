@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faast – Picktask Helper
 // @namespace    https://faast.amazon.co.uk/
-// @version      1.7
+// @version      1.6.1
 // @description  Picktask Helper – Bulk/BulkSplit/Proposal + Weight check
 // @author       Developed by davthun, built by Aki
 // @match        https://faast.amazon.co.uk/*
@@ -866,7 +866,7 @@
 
   function init(){
     dbg('INIT', `v1.6 init: path=${location.pathname} WH=${WH}`);
-    console.log('[BulkPack] v1.7 Init:', location.pathname, '| WH:', WH);
+    console.log('[BulkPack] v1.6.1 Init:', location.pathname, '| WH:', WH);
     loadFromStorage();
     if(!ON_PT()) return;
     if(document.body){buildPanel();refreshPanel();}
