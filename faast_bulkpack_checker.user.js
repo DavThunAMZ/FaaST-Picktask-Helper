@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faast – Picktask Helper
 // @namespace    https://faast.amazon.co.uk/
-// @version      1.5
+// @version      1.6
 // @description  Picktask Helper – Bulk/BulkSplit/Proposal + Weight check
 // @author       Developed by davthun, built by Aki
 // @match        https://faast.amazon.co.uk/*
@@ -26,6 +26,42 @@
 
   const isAsin = v => /^B[0-9A-Z]{9}$/.test(String(v ?? '').trim());
 
+  // === DEBUG LOG =============================================================
+  let debugEnabled = false;
+  const LOG_BUFFER = [];
+  const CAT_COLORS = {
+    INIT:'#6366f1', FETCH:'#0891b2', XHR:'#0891b2', ORDERS:'#16a34a',
+    INV:'#d97706', SCRAPE:'#7c3aed', WEIGHT:'#db2777', PICKER:'#059669',
+    ANALYZE:'#475569', FILL:'#2563eb', STORAGE:'#94a3b8', ERROR:'#dc2626',
+  };
+  function dbg(cat, msg, data) {
+    if (!debugEnabled) return;
+    const ts = new Date().toTimeString().slice(0, 8);
+    LOG_BUFFER.push({ts, cat, msg, data});
+    if (LOG_BUFFER.length > 200) LOG_BUFFER.shift();
+    const sty = 'color:' + (CAT_COLORS[cat]||'#64748b') + ';font-weight:700';
+    if (data !== undefined) console.log('[PTH %c'+cat+'%c] '+msg, sty, '', data);
+    else                    console.log('[PTH %c'+cat+'%c] '+msg, sty, '');
+    renderDebugLog();
+  }
+  function renderDebugLog() {
+    const el = document.getElementById('bpc-dbg-log');
+    if (!el || el.style.display === 'none') return;
+    const atBot = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    el.innerHTML = LOG_BUFFER.map(e => {
+      const c = CAT_COLORS[e.cat]||'#64748b';
+      const d = e.data !== undefined
+        ? '<span style="color:#94a3b8;margin-left:6px">' + JSON.stringify(e.data).slice(0,120) + '</span>'
+        : '';
+      return '<div style="padding:1px 0;border-bottom:1px solid #1e293b">'
+        + '<span style="color:#475569">' + e.ts + '</span> '
+        + '<span style="color:' + c + ';font-weight:700;font-size:9px;padding:1px 5px;border-radius:3px;margin:0 4px">' + e.cat + '</span>'
+        + '<span style="color:#e2e8f0">' + e.msg + '</span>' + d + '</div>';
+    }).join('');
+    if (atBot) el.scrollTop = el.scrollHeight;
+  }
+  // ===========================================================================
+
   const DB = {
     picktasks: [],   // [{ asin, orderQty }]
     lastLoaded: null,  // timestamp when orders were last loaded
@@ -40,9 +76,9 @@
   const lsDel = k => { try { localStorage.removeItem(k); } catch(_) {} };
 
   function loadFromStorage() {
-    try { const i=JSON.parse(lsGet(LS_INV)||'[]');     if(i.length) DB.inventory=i; } catch(_) {}
-    try { const t=JSON.parse(lsGet(LS_TASKS)||'[]');   if(t.length) DB.picktasks=t; } catch(_) {}
-    try { const w=JSON.parse(lsGet(LS_WEIGHTS)||'{}'); if(w) DB.weights=w; } catch(_) {}
+    try { const i=JSON.parse(lsGet(LS_INV)||'[]');     if(i.length) { DB.inventory=i; dbg('STORAGE','Inventory from cache: '+i.length+' rows'); } } catch(e) { dbg('ERROR','LS inv: '+e.message); }
+    try { const t=JSON.parse(lsGet(LS_TASKS)||'[]');   if(t.length) { DB.picktasks=t; dbg('STORAGE','Tasks from cache: '+t.length); } } catch(e) { dbg('ERROR','LS tasks: '+e.message); }
+    try { const w=JSON.parse(lsGet(LS_WEIGHTS)||'{}'); if(w) { DB.weights=w; dbg('STORAGE','Weights from cache: '+Object.keys(w).length); } } catch(e) { dbg('ERROR','LS weights: '+e.message); }
   }
 
 
@@ -50,6 +86,7 @@
   function saveWeight(asin, kg) {
     DB.weights[asin] = kg;
     lsSet(LS_WEIGHTS, JSON.stringify(DB.weights));
+    dbg('WEIGHT', 'Saved '+asin+' = '+kg+' kg');
   }
 
   // ═══ SCRAPER ══════════════════════════════════════════════════════════════
@@ -62,6 +99,7 @@
         .map(th => th.textContent.trim().toLowerCase());
       if (!heads.some(h=>h.includes('container'))) continue;
       if (!heads.some(h=>h.includes('available')||h==='quantity')) continue;
+      dbg('SCRAPE', 'Table found for '+fallbackAsin+' — heads: '+heads.join(','));
       const ci = {
         container: heads.findIndex(h=>h==='container'),
         invType:   heads.findIndex(h=>h.includes('inventory')||h.includes('type')),
@@ -99,6 +137,7 @@
         results.push({ asin: fallbackAsin, qty: nums[0]??0, containerId: cid, location: cid });
       }
     }
+    dbg('SCRAPE', 'scrapeInvTable result for '+fallbackAsin+': '+results.length+' rows');
     return results;
   }
 
@@ -129,6 +168,7 @@
       const m2 = cells[1].textContent.match(/(\d+[.,]\d+|\d+)\s*(kg|g)/i);
       if (m2) { const val=parseFloat(m2[1].replace(',','.')); return m2[2].toLowerCase()==='g'?val/1000:val; }
     }
+    dbg('WEIGHT', 'No weight found for page');
     return null;
   }
 
@@ -143,34 +183,42 @@
   // ═══ SILENT FETCH ═════════════════════════════════════════════════════════
   async function silentFetch(asins, onStatus) {
     const results = []; let failed = 0;
+    dbg('INV', 'silentFetch: '+asins.length+' ASINs');
     for (let i=0; i<asins.length; i++) {
       const asin = asins[i];
       onStatus(`⏳ ${i+1}/${asins.length}: ${asin}…`);
+      dbg('INV', `Fetching ${asin} (${i+1}/${asins.length})`);
       try {
         const r = await fetch(`${BASE}/web/products/${asin}`, {
           credentials: 'include', headers: { 'Accept': 'text/html' }
         });
-        if (!r.ok) { failed++; continue; }
+        dbg('INV', `HTTP ${r.status} for ${asin}`);
+        if (!r.ok) { failed++; dbg('ERROR', `HTTP ${r.status} for ${asin}`); continue; }
         const html = await r.text();
-        if (html.length<3000 && html.includes('login')) { failed+=asins.length; break; }
+        dbg('INV', `HTML ${html.length} chars for ${asin}`);
+        if (html.length<3000 && html.includes('login')) { dbg('ERROR','Login redirect — aborting'); failed+=asins.length; break; }
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const { rows, weight } = scrapeProductPage(doc, asin);
+        dbg('INV', `${asin}: ${rows.length} rows, weight=${weight}`);
         if (rows.length) results.push(...rows);
-        else { failed++; }
+        else { failed++; dbg('ERROR', `0 rows for ${asin}`); }
         if (weight !== null) saveWeight(asin, weight);
-      } catch(e) { failed++; }
+      } catch(e) { failed++; dbg('ERROR', `Exception ${asin}: `+e.message); }
     }
+    dbg('INV', `silentFetch done: ${results.length} rows, ${failed} failed`);
     return { results, failed };
   }
 
   // ═══ PICKTASKS ════════════════════════════════════════════════════════════
   function parseTaskData(data) {
-    if (!data) return [];
+    if (!data) { dbg('ORDERS','parseTaskData: null data'); return []; }
+    dbg('ORDERS','parseTaskData keys: '+Object.keys(data).join(', '));
     const rows = [];
     const map = data.topFnskus??data.topFnsku??data.fnskus??null;
     if (map&&typeof map==='object'&&!Array.isArray(map))
       for (const [a,c] of Object.entries(map)) { const id=String(a).trim().toUpperCase(); if(isAsin(id)) rows.push({asin:id,orderQty:Number(c)||1}); }
     if (!rows.length) for (const [k,v] of Object.entries(data)) if(isAsin(k)) rows.push({asin:k,orderQty:Number(v)||1});
+    dbg('ORDERS','parseTaskData: '+rows.length+' ASINs');
     return rows.sort((a,b)=>b.orderQty-a.orderQty);
   }
 
@@ -197,13 +245,14 @@
 
     // Sync date range: wenn Faast selbst die Order-API aufruft, Datums-Inputs anpassen
     if (url.includes('getOrderCountAndTopFnskuByFilter') && body) {
+      dbg('FETCH','Intercepted: getOrderCountAndTopFnskuByFilter');
       try {
         const params = new URLSearchParams(body);
         const from = apiDateToInput(params.get('exsdDateAfter'));
         const to   = apiDateToInput(params.get('exsdDateBefore'));
         if (from) dateFrom = from;
         if (to)   dateTo   = to;
-        if (from || to) updateDateDisplay();
+        if (from || to) { updateDateDisplay(); dbg('FETCH',`Date sync: ${from} – ${to}, WH: ${wh}`); }
         const wh = params.get('warehouseCode'); if (wh) WH = wh;
       } catch(_) {}
     }
@@ -211,8 +260,9 @@
     const r = await _F(...a);
     try { r.clone().json().then(d => {
       const m=url.match(/warehouseCode=([A-Z0-9]{3,6})/); if(m) WH=m[1];
+      dbg('FETCH','Response JSON keys: '+Object.keys(d).join(', '));
       const rows=parseTaskData(d);
-      if(rows.length>=3&&rows.length>DB.picktasks.length){DB.picktasks=rows;lsSet(LS_TASKS,JSON.stringify(rows));setStatus(`✅ ${rows.length} Orders — 🗄 Inventory aktualisieren!`);refreshPanel();}
+      if(rows.length>=3&&rows.length>DB.picktasks.length){DB.picktasks=rows;lsSet(LS_TASKS,JSON.stringify(rows));dbg('ORDERS','Auto-loaded '+rows.length+' tasks via intercept');setStatus(`✅ ${rows.length} Orders — 🗄 Inventory aktualisieren!`);refreshPanel();}
     }).catch(()=>{}); } catch(_) {}
     return r;
   };
@@ -286,6 +336,7 @@
       'materialTypeToMaxNumberOfType[PALLET]': '0',
     });
     if (WH) body.set('warehouseCode', WH);
+    dbg('ORDERS', `loadPicktasks: WH=${WH} from=${fmtDate(fromDate)} to=${fmtDate(toDate)}`);
 
     try {
       const r = await fetch(`${BASE}/web/ajax/order/getOrderCountAndTopFnskuByFilter`, {
@@ -297,9 +348,11 @@
         },
         body: body.toString(),
       });
+      dbg('ORDERS', `API response: HTTP ${r.status}`);
       if (r.ok) {
         const d = await r.json();
         const rows = parseTaskData(d);
+        dbg('ORDERS', `Response parsed: ${rows.length} rows`, rows.slice(0,3));
         if (rows.length) {
           DB.picktasks = rows;
           lsSet(LS_TASKS, JSON.stringify(rows));
@@ -308,7 +361,7 @@
           refreshPanel(); autoTriggerPicker(); return;
         }
       }
-    } catch(_) {}
+    } catch(e) { dbg('ERROR','loadPicktasks exception: '+e.message); }
     setStatus('⚠️ No tasks found');
   }
 
@@ -367,6 +420,7 @@
         ? Math.ceil(qty / proposalQty)
         : rawPicktasks;
 
+      dbg('ANALYZE', `${asin}: orders=${orders} units=${units} avail=${avail} → ${canBulk?'Bulk':isBulkSplit?'BulkSplit':'Proposal'} pt=${picktasks}`);
       return {
         asin, orders, units, qty, bins, avail, total,
         batchSize: (orders > 0 && picktasks > 0) ? Math.ceil(orders / picktasks) : 0,
@@ -423,6 +477,12 @@
     .kg-ok{color:#64748b;font-size:9px;}
     .notice{background:#fefce8;border:1px solid #fde047;border-radius:5px;padding:10px 14px;font-size:10px;line-height:2;}
     #bpc-st{font-size:9px;opacity:.85;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .bdbg{background:#7c3aed;color:#fff;}
+    #bpc-dbg-wrap{border-top:2px solid #334155;flex-shrink:0;}
+    #bpc-dbg-bar{display:flex;align-items:center;gap:6px;padding:4px 10px;background:#1e293b;}
+    #bpc-dbg-bar span{color:#94a3b8;font-size:9px;font-weight:700;flex:1;}
+    #bpc-dbg-log{height:160px;overflow-y:auto;padding:6px 10px;font-family:monospace;font-size:9px;
+      line-height:1.6;color:#e2e8f0;background:#0f172a;}
   `;
 
   function buildPanel() {
@@ -434,7 +494,8 @@
         <span>📦</span>
         <h3>Picktask Helper <small style="opacity:.4;font-weight:400;font-size:9px">v1.5</small></h3>
         <span id="bpc-st"></span>
-        <button class="btn bd" id="bpc-m" style="padding:2px 7px;margin-left:4px">▼</button>
+        <button class="btn bdbg" id="btn-dbg" style="padding:2px 8px" title="Toggle Debug Log">🐛</button>
+        <button class="btn bd" id="bpc-m" style="padding:2px 7px;margin-left:2px">▼</button>
         <button class="btn bd" id="bpc-x" style="padding:2px 7px">✕</button>
       </div>
       <div id="bpc-c">
@@ -449,10 +510,34 @@
           </label>
         </div>
         <div id="bpc-body"></div>
+
+      <div id="bpc-dbg-wrap" style="display:none">
+        <div id="bpc-dbg-bar">
+          <span>🐛 Debug Log</span>
+          <button class="btn bd" id="btn-dbg-clear" style="padding:2px 7px;font-size:9px">Clear</button>
+          <button class="btn bd" id="btn-dbg-copy"  style="padding:2px 7px;font-size:9px">Copy</button>
+        </div>
+        <div id="bpc-dbg-log"></div>
       </div>`;
     document.body.appendChild(p);
 
     document.getElementById('bpc-x').onclick = ()=>p.remove();
+    document.getElementById('btn-dbg').onclick = () => {
+      debugEnabled = true;
+      const wrap = document.getElementById('bpc-dbg-wrap');
+      const isOpen = wrap.style.display !== 'none';
+      wrap.style.display = isOpen ? 'none' : '';
+      document.getElementById('btn-dbg').style.opacity = isOpen ? '0.5' : '1';
+      if (!isOpen) { renderDebugLog(); dbg('INIT', 'Debug panel opened — ' + LOG_BUFFER.length + ' entries'); }
+    };
+    document.getElementById('btn-dbg-clear').onclick = () => {
+      LOG_BUFFER.length = 0;
+      const el = document.getElementById('bpc-dbg-log'); if (el) el.innerHTML = '';
+    };
+    document.getElementById('btn-dbg-copy').onclick = () => {
+      const text = LOG_BUFFER.map(e=>'['+e.ts+'] ['+e.cat+'] '+e.msg+(e.data!==undefined?' '+JSON.stringify(e.data):'')).join('\n');
+      navigator.clipboard.writeText(text).then(()=>setStatus('📋 Log copied!'));
+    };
     document.getElementById('bpc-m').onclick = () => {
       const bpcBody  = document.getElementById('bpc-c');
       const bpcPanel = document.getElementById('bpc');
@@ -639,6 +724,7 @@
   async function loadInventory() {
     const asins=[...new Set(DB.picktasks.map(t=>t.asin))];
     if(!asins.length){setStatus('⚠️ Load Orders first!');return;}
+    dbg('INV','loadInventory: '+asins.length+' unique ASINs');
     const btn=document.getElementById('btn-inv');
     if(btn){btn.disabled=true; btn.textContent='⏳…';}
     const {results,failed}=await silentFetch(asins,msg=>{setStatus(msg);if(btn)btn.textContent=msg.substring(0,15);});
@@ -647,9 +733,11 @@
       DB.inventory=DB.inventory.filter(r=>!asinSet.has(r.asin));
       DB.inventory.push(...results);
       lsSet(LS_INV,JSON.stringify(DB.inventory));
+      dbg('INV',`Inventory updated: ${DB.inventory.length} total, ${failed} failed`);
       setStatus(`✅ Inventory: ${DB.inventory.length}`);
       renderResult();
     } else {
+      dbg('ERROR',`0 results, ${failed} failed — login?`);
       setStatus('Fetch failed — please retry');
     }
     if(btn){btn.disabled=false; btn.textContent='🗄 Inventory';}
@@ -664,7 +752,7 @@
       let m, found = false;
       while ((m = re.exec(text)) !== null) {
         const asin = m[1].toUpperCase();
-        if (isAsin(asin)) { DB.unitCounts[asin] = Number(m[2]); found = true; }
+        if (isAsin(asin)) { DB.unitCounts[asin] = Number(m[2]); found = true; dbg('PICKER', asin+' = '+m[2]+' units'); }
       }
       re.lastIndex = 0;
       return found;
@@ -697,10 +785,12 @@
 
   // Öffnet den Faast FNSKU-Picker kurz → MutationObserver fängt alle ASIN(N units)
   function autoTriggerPicker() {
-    DB.unitCounts = {}; // reset so alle ASINs neu geladen werden
+    DB.unitCounts = {};
+    dbg('PICKER','autoTriggerPicker: resetting and triggering');
     const picker = document.querySelector('input[placeholder="Use FNSKU"]')
                 || [...document.querySelectorAll('input')].find(el => el.placeholder?.toLowerCase().includes('fnsku'));
-    if (!picker) return;
+    if (!picker) { dbg('PICKER','autoTriggerPicker: picker input NOT found'); return; }
+    dbg('PICKER','autoTriggerPicker: picker found');
     picker.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true}));
     picker.focus();
     setTimeout(() => {
@@ -725,10 +815,12 @@
 
   // Überträgt ASIN → Use FNSKU + Batch Size in Faast
   function fillFaastFields(asin, batchSize) {
+    dbg('FILL', `fillFaastFields: ${asin} batch=${batchSize}`);
     // Step 1: Type ASIN into visible input → triggers dropdown
     const fnsku = document.getElementById('fnsku-input')
                 || document.querySelector('input[placeholder="Use FNSKU"]');
     if (fnsku) {
+      dbg('FILL', 'FNSKU input found');
       fnsku.value = asin;
       fnsku.dispatchEvent(new Event('input',  {bubbles:true}));
       fnsku.dispatchEvent(new Event('keyup',  {bubbles:true}));
@@ -742,6 +834,7 @@
         item.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
         item.click();
       } else {
+        dbg('FILL', `Dropdown NOT found for ${asin} — trying hidden field`);
         // Fallback: set hidden field directly
         const fnskuHidden = document.querySelector('input[name="fnsku"]');
         if (fnskuHidden) { fnskuHidden.value=asin; fnskuHidden.dispatchEvent(new Event('change',{bubbles:true})); }
@@ -760,6 +853,7 @@
       const batchEl = document.getElementById('form_batch_size')
                     || document.querySelector('input[name="batchSize"]');
       if (batchEl && batchSize > 0) {
+        dbg('FILL', `Batch size set: ${batchSize}`);
         batchEl.value = batchSize;
         ['input','change'].forEach(ev=>batchEl.dispatchEvent(new Event(ev,{bubbles:true})));
         setStatus(`✅ ${asin} | Batch: ${batchSize}`);
@@ -772,7 +866,8 @@
   const ON_PT = () => location.pathname === '/web/picktasks/new';
 
   function init(){
-    console.log('[BulkPack] v1.5 Init:', location.pathname, '| name:', window.name);
+    dbg('INIT', `v1.6 init: path=${location.pathname} WH=${WH}`);
+    console.log('[BulkPack] v1.6 Init:', location.pathname, '| WH:', WH);
     loadFromStorage();
     if(!ON_PT()) return;
     if(document.body){buildPanel();refreshPanel();}
@@ -798,8 +893,10 @@
           loadFromStorage();
           if(!document.getElementById('bpc'))buildPanel();
           refreshPanel();
+          dbg('INIT',`SPA nav → picktasks`);
         } else {
           document.getElementById('bpc')?.remove();
+          dbg('INIT',`SPA nav → away (${location.pathname})`);
         }
       },800);
     }
