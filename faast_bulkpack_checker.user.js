@@ -491,7 +491,7 @@
     p.innerHTML=`
       <div id="bpc-hdr">
         <span>📦</span>
-        <h3>Picktask Helper <small style="opacity:.4;font-weight:400;font-size:9px">v1.5</small></h3>
+        <h3>Picktask Helper <small style="opacity:.4;font-weight:400;font-size:9px">v1.6.1</small></h3>
         <span id="bpc-st"></span>
         <button class="btn bdbg" id="btn-dbg" style="padding:2px 8px" title="Toggle Debug Log">🐛</button>
         <button class="btn bd" id="bpc-m" style="padding:2px 7px;margin-left:2px">▼</button>
@@ -865,7 +865,7 @@
   const ON_PT = () => location.pathname === '/web/picktasks/new';
 
   function init(){
-    dbg('INIT', `v1.6 init: path=${location.pathname} WH=${WH}`);
+    dbg('INIT', `v1.6.1 init: path=${location.pathname} WH=${WH}`);
     console.log('[BulkPack] v1.6.1 Init:', location.pathname, '| WH:', WH);
     loadFromStorage();
     if(!ON_PT()) return;
