@@ -287,8 +287,7 @@
         // Inputs updaten (falls Panel schon existiert)
         if (from) dateFrom = from;
         if (to)   dateTo   = to;
-        if (from || to) { updateDateDisplay(); console.log('[PTH] Date sync from XHR:', from, '–', to); }
-        if (from || to) console.log('[PTH] Date sync from XHR:', from, '–', to);
+        if (from || to) { updateDateDisplay(); dbg('XHR', 'Date sync: ' + from + ' – ' + to); }
       } catch(_) {}
     }
     return _XSend.call(this, body);
