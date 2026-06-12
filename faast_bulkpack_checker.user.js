@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Faast – Picktask Helper
 // @namespace    https://faast.amazon.co.uk/
-// @version      1.6.1
-// @description  Picktask Helper – Bulk/BulkSplit/Proposal + Weight check
+// @version      1.6.2
+// @description  Picktask Helper – Bulk/BulkSplit/Proposal + Weight check + Best-fit bin
 // @author       Developed by davthun, built by Aki
 // @match        https://faast.amazon.co.uk/*
 // @grant        none
@@ -357,7 +357,9 @@
           lsSet(LS_TASKS, JSON.stringify(rows));
           DB.lastLoaded = Date.now();
           setStatus(`✅ ${rows.length} Orders geladen — 🗄 Inventory aktualisieren!`);
-          refreshPanel(); autoTriggerPicker(); return;
+          refreshPanel(); autoTriggerPicker();
+          if (DB.inventory.length === 0) loadInventory();
+          return;
         }
       }
     } catch(e) { dbg('ERROR','loadPicktasks exception: '+e.message); }
@@ -398,15 +400,24 @@
       const canBulk     = !isProposal && avail > 0 && avail % qty === 0;
       const isBulkSplit = !isProposal && avail > 0 && !canBulk;
 
+      // ── Best-fit bin (alle Typen) ────────────────────────────────────────
+      // Wähle kleinsten Bin der qty abdeckt; wenn keiner ausreicht → größter Bin (idx=0)
+      const bestBinIdx = (() => {
+        if (!bins.length) return 0;
+        const suf = bins.map((b,i)=>({b,i})).filter(({b})=>b.q>=qty);
+        return suf.length > 0 ? suf.reduce((a,c)=>c.b.q<a.b.q?c:a).i : 0;
+      })();
+      const proposalBinQty = bins[bestBinIdx]?.q ?? avail;
+
       // ── Gewichtslimit für Proposal ────────────────────────────────────────
-      let proposalQty   = avail;
+      let proposalQty   = proposalBinQty;
       let proposalKg    = null;
       let weightWarning = false;
       const ignoreKg = document.getElementById('chk-nokg')?.checked ?? false;
       if (isProposal && weight !== null && weight > 0) {
         const maxUnits = Math.max(1, Math.floor(MAX_KG / weight));
-        proposalKg = +(avail * weight).toFixed(1);
-        if (avail * weight > MAX_KG) {
+        proposalKg = +(proposalBinQty * weight).toFixed(1);
+        if (proposalBinQty * weight > MAX_KG) {
           weightWarning = true;
           if (!ignoreKg) {
             proposalQty = maxUnits;
@@ -421,7 +432,7 @@
 
       dbg('ANALYZE', `${asin}: orders=${orders} units=${units} avail=${avail} → ${canBulk?'Bulk':isBulkSplit?'BulkSplit':'Proposal'} pt=${picktasks}`);
       return {
-        asin, orders, units, qty, bins, avail, total,
+        asin, orders, units, qty, bins, avail, total, bestBinIdx,
         batchSize: (orders > 0 && picktasks > 0) ? Math.ceil(orders / picktasks) : 0,
         picktasks, weight, proposalQty, proposalKg, weightWarning, ignoreKg,
         canBulk, isBulkSplit, isProposal,
@@ -491,7 +502,7 @@
     p.innerHTML=`
       <div id="bpc-hdr">
         <span>📦</span>
-        <h3>Picktask Helper <small style="opacity:.4;font-weight:400;font-size:9px">v1.6.1</small></h3>
+        <h3>Picktask Helper <small style="opacity:.4;font-weight:400;font-size:9px">v1.6.2</small></h3>
         <span id="bpc-st"></span>
         <button class="btn bdbg" id="btn-dbg" style="padding:2px 8px" title="Toggle Debug Log">🐛</button>
         <button class="btn bd" id="bpc-m" style="padding:2px 7px;margin-left:2px">▼</button>
@@ -650,7 +661,7 @@
 
         // Bins anzeigen (beste zuerst, alle mit Qty)
         const binsHtml = r.bins.length
-          ? r.bins.map((b,i)=>`<span class="bin-pill ${i===0?'bin-best':''}">${b.c}×${b.q}</span>`).join('')
+          ? r.bins.map((b,i)=>`<span class="bin-pill ${i===r.bestBinIdx?'bin-best':''}">${b.c}×${b.q}</span>`).join('')
           : '<span class="dim">—</span>';
 
         // Picktasks-Farbe
@@ -865,8 +876,8 @@
   const ON_PT = () => location.pathname === '/web/picktasks/new';
 
   function init(){
-    dbg('INIT', `v1.6.1 init: path=${location.pathname} WH=${WH}`);
-    console.log('[BulkPack] v1.6.1 Init:', location.pathname, '| WH:', WH);
+    dbg('INIT', `v1.6.2 init: path=${location.pathname} WH=${WH}`);
+    console.log('[BulkPack] v1.6.2 Init:', location.pathname, '| WH:', WH);
     loadFromStorage();
     if(!ON_PT()) return;
     if(document.body){buildPanel();refreshPanel();}
