@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faast – Picktask Helper
 // @namespace    https://faast.amazon.co.uk/
-// @version      1.6.2
+// @version      1.6.3
 // @description  Picktask Helper – Bulk/BulkSplit/Proposal + Weight check + Best-fit bin
 // @author       Developed by davthun, built by Aki
 // @match        https://faast.amazon.co.uk/*
@@ -302,68 +302,102 @@
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   }
 
-  async function loadPicktasks() {
-    setStatus('Loading…');
 
-    const today    = new Date();
-    const fromDate = dateFrom ? new Date(dateFrom) : today;
-    const toDate   = dateTo   ? new Date(dateTo)   : today;
+  // ═══ SEARCH ORDER PAGE ════════════════════════════════════════════════════
+  // Lädt alle Orders von /web/orders/search (kein Top-10-Limit).
+  // Angezeigte ASINs kommen aus dem Use-FNSKU-Picker (nur die können Picktasks erstellen).
+  // Search Orders liefert nur die orderQty je Picker-ASIN.
+  async function loadOrdersFromSearch() {
+    setStatus('⏳ Full Orders…');
+    const btn = document.getElementById('btn-so');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳…'; }
 
-    const body = new URLSearchParams({
-      useExsdAfter:    'true',
-      exsdDateAfter:   fmtDate(fromDate),
+    // ── Schritt 1: Picker triggern und auf Ergebnisse warten ──────────────────
+    DB.unitCounts = {};
+    try { autoTriggerPicker(); } catch(_) {}
+    setStatus('⏳ Warte auf Picker…');
+    await new Promise(r => setTimeout(r, 900));
+    const pickerAsins = Object.keys(DB.unitCounts);
+    dbg('PICKER', 'Picker-Ergebnis nach 900ms: ' + pickerAsins.length + ' ASINs');
+
+    // ── Schritt 2: Search Orders alle Seiten abrufen ──────────────────────────
+    const toMDY = s => { if (!s) return fmtDate(new Date()); const [y,m,d]=s.split('-'); return `${m}/${d}/${y}`; };
+    const params = new URLSearchParams({
+      useExsdAfter:    'on',
+      exsdDateAfter:   toMDY(dateFrom),
       exsdTimeAfter:   '00:00',
-      useExsdBefore:   'true',
-      exsdDateBefore:  fmtDate(toDate),
+      useExsdBefore:   'on',
+      exsdDateBefore:  toMDY(dateTo),
       exsdTimeBefore:  '23:59',
-      orderType:       'SHIPMENT',
-      shipMethod:      'ALL',
-      single:          'true',
-      giftWrap:        'false',
-      hazmat:          'false',
-      b2b:             'false',
-      tcapAware:       'false',
-      batchMode:       'batch_size_mode',
-      pickTool:        'PAPER',
-      orderTypes:      'SHIPMENT',
-      wrangle:         'false',
-      destinationWarehouseCode: '',
-      fragile:         '',
-      containsLiquids: '',
-      'materialTypeToMaxNumberOfType[EACH]':   '0',
-      'materialTypeToMaxNumberOfType[CARTON]': '0',
-      'materialTypeToMaxNumberOfType[PALLET]': '0',
+      fastTrack:       'null',
+      single:          'null',
+      sioc:            'null',
+      giftOrder:       'null',
+      fragile:         'null',
+      containsLiquids: 'null',
+      giftWrap:        'null',
+      hazmat:          'null',
+      b2b:             'null',
+      fnsku:           '',
+      action:          'search',
+      statuses:        'NEW',
     });
-    if (WH) body.set('warehouseCode', WH);
-    dbg('ORDERS', `loadPicktasks: WH=${WH} from=${fmtDate(fromDate)} to=${fmtDate(toDate)}`);
 
+    const orderCounts = {};  // { asin: totalQty }
+    let page = 1, totalRows = 0;
     try {
-      const r = await fetch(`${BASE}/web/ajax/order/getOrderCountAndTopFnskuByFilter`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'application/json',
-        },
-        body: body.toString(),
-      });
-      dbg('ORDERS', `API response: HTTP ${r.status}`);
-      if (r.ok) {
-        const d = await r.json();
-        const rows = parseTaskData(d);
-        dbg('ORDERS', `Response parsed: ${rows.length} rows`, rows.slice(0,3));
-        if (rows.length) {
-          DB.picktasks = rows;
-          lsSet(LS_TASKS, JSON.stringify(rows));
-          DB.lastLoaded = Date.now();
-          setStatus(`✅ ${rows.length} Orders geladen — 🗄 Inventory aktualisieren!`);
-          refreshPanel(); autoTriggerPicker();
-          if (DB.inventory.length === 0) loadInventory();
-          return;
+      while (page <= 200) {
+        params.set('page', page);
+        setStatus(`⏳ Seite ${page}…`);
+        dbg('ORDERS', `searchOrders: page ${page}`);
+        const r = await fetch(`${BASE}/web/orders/search?${params}`, {
+          credentials: 'include',
+          headers: { 'Accept': 'text/html' },
+        });
+        if (!r.ok) { dbg('ERROR', `Search p${page}: HTTP ${r.status}`); break; }
+        const html = await r.text();
+        if (html.length < 500 || (html.length < 5000 && html.includes('login'))) {
+          dbg('ERROR', 'Login redirect'); break;
         }
+        const re = /([B][0-9A-Z]{9})\((\d+)\)/g;
+        let m, pageRows = 0;
+        while ((m = re.exec(html)) !== null) {
+          if (isAsin(m[1])) {
+            orderCounts[m[1]] = (orderCounts[m[1]] || 0) + Number(m[2]);
+            pageRows++; totalRows++;
+          }
+        }
+        dbg('ORDERS', `searchOrders page ${page}: ${pageRows} items`);
+        if (pageRows === 0) break;
+        page++;
       }
-    } catch(e) { dbg('ERROR','loadPicktasks exception: '+e.message); }
-    setStatus('⚠️ No tasks found');
+    } catch(e) {
+      dbg('ERROR', 'loadOrdersFromSearch: ' + e.message);
+      setStatus('⚠️ Orders Error: ' + e.message);
+      if (btn) { btn.disabled = false; btn.textContent = '📋 All Orders'; }
+      return;
+    }
+
+    // ── Schritt 3: DB.picktasks = Picker-ASINs + orderQty aus Search Orders ───
+    // Nur Picker-ASINs anzeigen (nur die können Picktasks erstellen).
+    // Fallback: wenn Picker leer → alle Search-Order-ASINs.
+    const baseAsins = pickerAsins.length > 0 ? pickerAsins : Object.keys(orderCounts);
+    if (baseAsins.length === 0) {
+      setStatus('⚠️ Keine Orders/Picker-Daten gefunden');
+      if (btn) { btn.disabled = false; btn.textContent = '📋 All Orders'; }
+      return;
+    }
+
+    DB.picktasks = baseAsins
+      .map(asin => ({ asin, orderQty: orderCounts[asin] || 0 }))
+      .sort((a, b) => b.orderQty - a.orderQty);
+    lsSet(LS_TASKS, JSON.stringify(DB.picktasks));
+    DB.lastLoaded = Date.now();
+    dbg('ORDERS', `searchOrders done: ${DB.picktasks.length} ASINs, ${totalRows} rows, ${page} pages`);
+    setStatus(`✅ ${DB.picktasks.length} ASINs | ${totalRows} Units (${page} Seiten)`);
+    refreshPanel();
+    loadInventory();  // Picker bereits gelaufen (Schritt 1)
+    if (btn) { btn.disabled = false; btn.textContent = '📋 All Orders'; }
   }
 
 
@@ -461,7 +495,7 @@
       flex-wrap:wrap;align-items:center;flex-shrink:0;background:#f8fafc;}
     .btn{padding:4px 11px;border:none;border-radius:4px;font-size:10px;font-weight:700;cursor:pointer;}
     .bg{background:#16a34a;color:#fff;}.bb{background:#2563eb;color:#fff;}
-    .bd{background:#475569;color:#fff;}.br{background:#dc2626;color:#fff;}
+    .bd{background:#475569;color:#fff;}.br{background:#dc2626;color:#fff;}.bp{background:#7c3aed;color:#fff;}
     .btn:hover{opacity:.82;}.btn:disabled{opacity:.5;cursor:default;}
     #bpc-c{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;}
     #bpc-body{overflow-y:auto;flex:1;padding:10px;min-height:0;}
@@ -502,7 +536,7 @@
     p.innerHTML=`
       <div id="bpc-hdr">
         <span>📦</span>
-        <h3>Picktask Helper <small style="opacity:.4;font-weight:400;font-size:9px">v1.6.2</small></h3>
+        <h3>Picktask Helper <small style="opacity:.4;font-weight:400;font-size:9px">v1.6.3</small></h3>
         <span id="bpc-st"></span>
         <button class="btn bdbg" id="btn-dbg" style="padding:2px 8px" title="Toggle Debug Log">🐛</button>
         <button class="btn bd" id="bpc-m" style="padding:2px 7px;margin-left:2px">▼</button>
@@ -510,7 +544,7 @@
       </div>
       <div id="bpc-c">
         <div id="bpc-bar">
-          <button class="btn bg" id="btn-pt">⬇ Orders</button>
+          <button class="btn bp" id="btn-so" title="Alle Orders kumuliert aus Search Order Seite">📋 All Orders</button>
           <span id="bpc-date" style="font-size:10px;color:#475569;font-weight:600;padding:3px 7px;background:#f1f5f9;border-radius:4px;border:1px solid #cbd5e1">—</span>
           <button class="btn bb" id="btn-inv">🗄 Inventory</button>
           <button class="btn bd" id="btn-rl" title="Reload data from local cache">🔄 Reload</button>
@@ -565,19 +599,12 @@
         document.getElementById('bpc-m').textContent = '▼';
       }
     };
-    document.getElementById('btn-pt').onclick = () => {
-      if (DB.picktasks.length > 0) {
-        [LS_INV,LS_TASKS].forEach(lsDel);
-        DB.picktasks=[]; DB.inventory=[];
-        renderResult();
-      }
-      loadPicktasks();
-    };
     document.getElementById('btn-rl').onclick = ()=>{DB.inventory=[];DB.picktasks=[];DB.weights={};loadFromStorage();setStatus(`T:${DB.picktasks.length} I:${DB.inventory.length}`);renderResult();};
     document.getElementById('btn-cl').onclick = ()=>{[LS_INV,LS_TASKS,LS_WEIGHTS].forEach(lsDel);DB.inventory=[];DB.picktasks=[];DB.weights={};setStatus('Cache cleared');renderResult();};
     document.getElementById('chk-nokg').onchange = renderResult;
 
     document.getElementById('btn-inv').onclick = loadInventory;
+    document.getElementById('btn-so').onclick = loadOrdersFromSearch;
 
     // Init date display with today as fallback
     const _td  = new Date();
@@ -786,7 +813,22 @@
             added = true;
           }
         }
-        if (added) lsSet(LS_TASKS, JSON.stringify(DB.picktasks));
+        if (added) {
+          lsSet(LS_TASKS, JSON.stringify(DB.picktasks));
+          // Inventory für neue Picker-ASINs still nachladen
+          const invKnown = new Set(DB.inventory.map(i => i.asin));
+          const toFetch = Object.keys(DB.unitCounts).filter(a => !invKnown.has(a));
+          if (toFetch.length > 0) {
+            dbg('INV', 'Picker: nachladen für ' + toFetch.length + ' neue ASINs');
+            silentFetch(toFetch, msg => dbg('INV', msg)).then(({results}) => {
+              if (results.length > 0) {
+                DB.inventory.push(...results);
+                lsSet(LS_INV, JSON.stringify(DB.inventory));
+                renderResult();
+              }
+            }).catch(() => {});
+          }
+        }
         renderResult();
       }
     });
@@ -876,8 +918,8 @@
   const ON_PT = () => location.pathname === '/web/picktasks/new';
 
   function init(){
-    dbg('INIT', `v1.6.2 init: path=${location.pathname} WH=${WH}`);
-    console.log('[BulkPack] v1.6.2 Init:', location.pathname, '| WH:', WH);
+    dbg('INIT', `v1.6.3 init: path=${location.pathname} WH=${WH}`);
+    console.log('[BulkPack] v1.6.3 Init:', location.pathname, '| WH:', WH);
     loadFromStorage();
     if(!ON_PT()) return;
     if(document.body){buildPanel();refreshPanel();}
