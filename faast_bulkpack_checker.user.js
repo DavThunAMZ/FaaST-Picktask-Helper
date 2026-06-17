@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faast – Picktask Helper
 // @namespace    https://faast.amazon.co.uk/
-// @version      1.6.3
+// @version      1.6.4
 // @description  Picktask Helper – Bulk/BulkSplit/Proposal + Weight check + Best-fit bin
 // @author       Developed by davthun, built by Aki
 // @match        https://faast.amazon.co.uk/*
@@ -329,6 +329,7 @@
       useExsdBefore:   'on',
       exsdDateBefore:  toMDY(dateTo),
       exsdTimeBefore:  '23:59',
+      orderTypes:      'SHIPMENT',
       fastTrack:       'null',
       single:          'null',
       sioc:            'null',
@@ -344,6 +345,7 @@
     });
 
     const orderCounts = {};  // { asin: totalQty }
+    const seenOrders = new Set();  // Duplikate durch Pagination-Overlap vermeiden
     let page = 1, totalRows = 0;
     try {
       while (page <= 200) {
@@ -359,12 +361,40 @@
         if (html.length < 500 || (html.length < 5000 && html.includes('login'))) {
           dbg('ERROR', 'Login redirect'); break;
         }
+        // Pro <tr> je ASIN einmal zählen (= Anzahl Orders, nicht Units-Summe)
+        const _doc = new DOMParser().parseFromString(html, 'text/html');
+        const _trs = _doc.querySelectorAll('table.order-result tbody tr, .search-order-result-container tbody tr');
+        dbg('ORDERS', `DOMParser: ${_trs.length} rows on page ${page}`);
+        let pageRows = 0;
         const re = /([B][0-9A-Z]{9})\((\d+)\)/g;
-        let m, pageRows = 0;
-        while ((m = re.exec(html)) !== null) {
-          if (isAsin(m[1])) {
-            orderCounts[m[1]] = (orderCounts[m[1]] || 0) + Number(m[2]);
-            pageRows++; totalRows++;
+        if (_trs.length > 0) {
+          // Nur echte Order-Zeilen; Order-ID merken → Pagination-Duplikate überspringen
+          for (const tr of _trs) {
+            const idCell = tr.querySelector('.order-id-column');
+            if (!idCell) continue;
+            const orderId = (idCell.querySelector('a')?.textContent || idCell.textContent).trim();
+            if (!orderId || seenOrders.has(orderId)) continue;
+            seenOrders.add(orderId);
+            re.lastIndex = 0;
+            const seen = new Set();
+            let m;
+            while ((m = re.exec(tr.textContent)) !== null) {
+              if (isAsin(m[1]) && !seen.has(m[1])) {
+                seen.add(m[1]);
+                orderCounts[m[1]] = (orderCounts[m[1]] || 0) + 1;
+                pageRows++;
+              }
+            }
+            totalRows++;
+          }
+        } else {
+          // Fallback: ganzes HTML, Summe der Units
+          let m;
+          while ((m = re.exec(html)) !== null) {
+            if (isAsin(m[1])) {
+              orderCounts[m[1]] = (orderCounts[m[1]] || 0) + Number(m[2]);
+              pageRows++; totalRows++;
+            }
           }
         }
         dbg('ORDERS', `searchOrders page ${page}: ${pageRows} items`);
@@ -393,7 +423,9 @@
       .sort((a, b) => b.orderQty - a.orderQty);
     lsSet(LS_TASKS, JSON.stringify(DB.picktasks));
     DB.lastLoaded = Date.now();
-    dbg('ORDERS', `searchOrders done: ${DB.picktasks.length} ASINs, ${totalRows} rows, ${page} pages`);
+    const dupes = totalRows - seenOrders.size;
+    DB.searchStats = { uniqueOrders: seenOrders.size, totalRows, dupes, pages: page - 1 };
+    dbg('ORDERS', `searchOrders done: ${DB.picktasks.length} ASINs | ${seenOrders.size} unique orders | ${totalRows} rows scanned | ${dupes} dupes skipped | ${page} pages`);
     setStatus(`✅ ${DB.picktasks.length} ASINs | ${totalRows} Units (${page} Seiten)`);
     refreshPanel();
     loadInventory();  // Picker bereits gelaufen (Schritt 1)
@@ -536,8 +568,9 @@
     p.innerHTML=`
       <div id="bpc-hdr">
         <span>📦</span>
-        <h3>Picktask Helper <small style="opacity:.4;font-weight:400;font-size:9px">v1.6.3</small></h3>
+        <h3>Picktask Helper <small style="opacity:.4;font-weight:400;font-size:9px">v1.6.4</small></h3>
         <span id="bpc-st"></span>
+        <button class="btn bd" id="btn-help" style="padding:2px 8px;margin-right:2px" title="Quick Guide">💡</button>
         <button class="btn bdbg" id="btn-dbg" style="padding:2px 8px" title="Toggle Debug Log">🐛</button>
         <button class="btn bd" id="bpc-m" style="padding:2px 7px;margin-left:2px">▼</button>
         <button class="btn bd" id="bpc-x" style="padding:2px 7px">✕</button>
@@ -545,10 +578,9 @@
       <div id="bpc-c">
         <div id="bpc-bar">
           <button class="btn bp" id="btn-so" title="Alle Orders kumuliert aus Search Order Seite">📋 All Orders</button>
-          <span id="bpc-date" style="font-size:10px;color:#475569;font-weight:600;padding:3px 7px;background:#f1f5f9;border-radius:4px;border:1px solid #cbd5e1">—</span>
           <button class="btn bb" id="btn-inv">🗄 Inventory</button>
-          <button class="btn bd" id="btn-rl" title="Reload data from local cache">🔄 Reload</button>
           <button class="btn br" id="btn-cl" title="Clear inventory + tasks from cache">🗑 Clear Cache</button>
+          <span id="bpc-date" style="font-size:10px;color:#475569;font-weight:600;padding:3px 7px;background:#f1f5f9;border-radius:4px;border:1px solid #cbd5e1">—</span>
           <label style="font-size:10px;color:#64748b;display:flex;align-items:center;gap:3px;cursor:pointer;">
             <input type="checkbox" id="chk-nokg" style="cursor:pointer;"> Ignore 30kg limit
           </label>
@@ -566,6 +598,31 @@
     document.body.appendChild(p);
 
     document.getElementById('bpc-x').onclick = ()=>p.remove();
+    document.getElementById('btn-help').onclick = () => {
+      const body = document.getElementById('bpc-body');
+      if (!body) return;
+      if (body.dataset.helpOpen === '1') {
+        body.dataset.helpOpen = '0';
+        document.getElementById('btn-help').style.opacity = '1';
+        renderResult();
+      } else {
+        body.dataset.helpOpen = '1';
+        document.getElementById('btn-help').style.opacity = '0.5';
+        body.innerHTML = `<div class="notice">
+          <strong style="font-size:11px">📦 Picktask Helper — Quick Guide</strong><br><br>
+          <strong>1. 📋 All Orders</strong> &nbsp;Scans Use-FNSKU picker for available ASINs, then fetches all orders from the Search Order page. Inventory loads automatically.<br>
+          <span style="color:#dc2626">⚠️ Set the date filter on the Faast picktask page first — otherwise ALL open orders will be pulled.</span><br>
+          <strong>2. Click a row</strong> &nbsp;Fills Use FNSKU + Batch Size in the Faast form — ready to create the pick task.<br>
+          <strong>3. 🗄 Inventory</strong> &nbsp;Use to manually refresh stock levels if needed.<br><br>
+          <strong style="color:#64748b">Types:</strong><br>
+          ✅ <strong>Bulk</strong> &nbsp;— Bin qty divides evenly by units (one pick)<br>
+          🟠 <strong>Bulk Split</strong> &nbsp;— Multiple picks from same bin required<br>
+          📋 <strong>Pick Task Proposal</strong> &nbsp;— avail &gt; 60 or qty &lt; 2<br><br>
+          <strong style="color:#64748b">Columns:</strong><br>
+          <strong>Orders</strong> = units ordered today &nbsp;·&nbsp; <strong>Units</strong> = qty from picker &nbsp;·&nbsp; <strong>Bins</strong> = green = best-fit bin
+        </div>`;
+      }
+    };
     document.getElementById('btn-dbg').onclick = () => {
       debugEnabled = true;
       const wrap = document.getElementById('bpc-dbg-wrap');
@@ -599,7 +656,6 @@
         document.getElementById('bpc-m').textContent = '▼';
       }
     };
-    document.getElementById('btn-rl').onclick = ()=>{DB.inventory=[];DB.picktasks=[];DB.weights={};loadFromStorage();setStatus(`T:${DB.picktasks.length} I:${DB.inventory.length}`);renderResult();};
     document.getElementById('btn-cl').onclick = ()=>{[LS_INV,LS_TASKS,LS_WEIGHTS].forEach(lsDel);DB.inventory=[];DB.picktasks=[];DB.weights={};setStatus('Cache cleared');renderResult();};
     document.getElementById('chk-nokg').onchange = renderResult;
 
@@ -623,17 +679,16 @@
     if(!DB.picktasks.length){
       body.innerHTML=`<div class="notice">
         <strong style="font-size:11px">📦 Picktask Helper — Quick Guide</strong><br><br>
-        <strong>1. ⬇ Orders</strong> &nbsp;Loads current orders (Top 10 via API + remaining ASINs via picker scan).<br>
-        <strong>2. 🗄 Inventory</strong> &nbsp;Fetches stock levels &amp; weight per ASIN.<br>
-        <strong>3. Results</strong> &nbsp;Shows Bulk / Bulk Split / Pick Task Proposal per ASIN.<br><br>
+        <strong>1. 📋 All Orders</strong> &nbsp;Scans Use-FNSKU picker for available ASINs, then fetches all orders from the Search Order page. Inventory loads automatically.<br>
+        <span style="color:#dc2626">⚠️ Set the date filter on the Faast picktask page first — otherwise ALL open orders will be pulled.</span><br>
+        <strong>2. Click a row</strong> &nbsp;Fills Use FNSKU + Batch Size in the Faast form — ready to create the pick task.<br>
+        <strong>3. 🗄 Inventory</strong> &nbsp;Use to manually refresh stock levels if needed.<br><br>
         <strong style="color:#64748b">Types:</strong><br>
-        ✅ <strong>Bulk</strong> &nbsp;— Bin qty divides evenly by units (one pick covers all)<br>
-        🟠 <strong>Bulk Split</strong> &nbsp;— Multiple picks required<br>
-        📋 <strong>Pick Task Proposal</strong> &nbsp;— Proposal pick task<br><br>
-        <strong style="color:#64748b">Why are some Orders fields empty?</strong><br>
-        The API only returns the <strong>Top 10 ASINs</strong> by order count. All remaining ASINs
-        are added automatically via the Faast FNSKU picker — which provides unit qty only,
-        not order count. Calculations still run correctly using units.
+        ✅ <strong>Bulk</strong> &nbsp;— Bin qty divides evenly by units (one pick)<br>
+        🟠 <strong>Bulk Split</strong> &nbsp;— Multiple picks from same bin required<br>
+        📋 <strong>Pick Task Proposal</strong> &nbsp;— avail &gt; 60 or qty &lt; 2<br><br>
+        <strong style="color:#64748b">Columns:</strong><br>
+        <strong>Orders</strong> = units ordered today &nbsp;·&nbsp; <strong>Units</strong> = qty from picker &nbsp;·&nbsp; <strong>Bins</strong> = green = best-fit bin
       </div>`;return;
     }
     if(!DB.inventory.length){
@@ -653,11 +708,16 @@
                 : visible.filter(r=>r.hasStock);
 
     body.innerHTML=`
-      <div class="summ">
-        ✅ <strong style="color:#15803d">${bulk.length}</strong> Bulk &nbsp;·&nbsp;
-        🟠 <strong style="color:#9a3412">${split.length}</strong> Bulk Split &nbsp;·&nbsp;
-        📋 <strong style="color:#1d4ed8">${prop.length}</strong> Proposal &nbsp;·&nbsp;
-        ❌ <strong style="color:#991b1b">${nos.length}</strong> No Stock
+      <div class="summ" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px;">
+        <span>
+          ✅ <strong style="color:#15803d">${bulk.length}</strong> Bulk &nbsp;·&nbsp;
+          🟠 <strong style="color:#9a3412">${split.length}</strong> Bulk Split &nbsp;·&nbsp;
+          📋 <strong style="color:#1d4ed8">${prop.length}</strong> Proposal &nbsp;·&nbsp;
+          ❌ <strong style="color:#991b1b">${nos.length}</strong> No Stock
+        </span>
+        ${DB.searchStats ? `<span style="font-size:9px;color:#64748b;white-space:nowrap">
+          📊 <strong>${DB.searchStats.uniqueOrders}</strong> orders${DB.searchStats.dupes > 0 ? ` · <span style="color:#dc2626">${DB.searchStats.dupes} dupes</span>` : ''}
+        </span>` : ''}
       </div>
       <div class="flt">
         <span class="fb ${activeFilter==='all'  ?'on':''}" data-f="all">All (${rows.filter(r=>r.hasStock).length})</span>
@@ -918,8 +978,8 @@
   const ON_PT = () => location.pathname === '/web/picktasks/new';
 
   function init(){
-    dbg('INIT', `v1.6.3 init: path=${location.pathname} WH=${WH}`);
-    console.log('[BulkPack] v1.6.3 Init:', location.pathname, '| WH:', WH);
+    dbg('INIT', `v1.6.4 init: path=${location.pathname} WH=${WH}`);
+    console.log('[BulkPack] v1.6.4 Init:', location.pathname, '| WH:', WH);
     loadFromStorage();
     if(!ON_PT()) return;
     if(document.body){buildPanel();refreshPanel();}
