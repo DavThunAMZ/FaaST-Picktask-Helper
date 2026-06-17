@@ -731,7 +731,7 @@
         <th style="text-align:center">Orders</th>
         <th style="text-align:center">Units</th>
         <th>Bins</th>
-        <th style="text-align:center">Total</th>
+        <th style="text-align:center">Total Stock available</th>
         <th style="text-align:center">Pick Tasks</th>
         <th style="text-align:center">Batch Size</th>
         <th>Status</th>
