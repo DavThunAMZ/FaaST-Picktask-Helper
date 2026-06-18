@@ -2,9 +2,10 @@
 // @name         Faast – Picktask Helper
 // @namespace    https://faast.amazon.co.uk/
 // @version      1.6.5
-// @description  Picktask Helper – Bulk/BulkSplit/Proposal + Weight check + Best-fit bin
+// @description  Picktask Helper – Bulk/BulkSplit/Proposal + Weight check + Best-fit bin (faast.amazon.co.uk + eu.schengen.amazonoperations.app)
 // @author       Developed by davthun, built by Aki
 // @match        https://faast.amazon.co.uk/*
+// @match        https://eu.schengen.amazonoperations.app/*
 // @grant        none
 // @run-at       document-start
 // @updateURL    https://raw.githubusercontent.com/DavThunAMZ/FaaST-Picktask-Helper/main/faast_bulkpack_checker.user.js
@@ -14,7 +15,10 @@
 (function () {
   'use strict';
 
-  const BASE = 'https://faast.amazon.co.uk';
+  // Dual-domain: faast.amazon.co.uk + eu.schengen.amazonoperations.app
+  const BASE = location.hostname.includes('schengen')
+    ? 'https://eu.schengen.amazonoperations.app'
+    : 'https://faast.amazon.co.uk';
   const MAX_KG = 30;
 
   const LS_INV     = 'bpc_inv_v1';
@@ -978,8 +982,8 @@
   const ON_PT = () => location.pathname === '/web/picktasks/new';
 
   function init(){
-    dbg('INIT', `v1.6.5 init: path=${location.pathname} WH=${WH}`);
-    console.log('[BulkPack] v1.6.5 Init:', location.pathname, '| WH:', WH);
+    dbg('INIT', `v1.6.5 init: path=${location.pathname} WH=${WH} BASE=${BASE}`);
+    console.log('[BulkPack] v1.6.5 Init:', location.pathname, '| WH:', WH, '| BASE:', BASE);
     loadFromStorage();
     if(!ON_PT()) return;
     if(document.body){buildPanel();refreshPanel();}
