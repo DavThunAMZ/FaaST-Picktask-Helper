@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faast – Picktask Helper
 // @namespace    https://faast.amazon.co.uk/
-// @version      1.6.4
+// @version      1.6.5
 // @description  Picktask Helper – Bulk/BulkSplit/Proposal + Weight check + Best-fit bin
 // @author       Developed by davthun, built by Aki
 // @match        https://faast.amazon.co.uk/*
@@ -568,7 +568,7 @@
     p.innerHTML=`
       <div id="bpc-hdr">
         <span>📦</span>
-        <h3>Picktask Helper <small style="opacity:.4;font-weight:400;font-size:9px">v1.6.4</small></h3>
+        <h3>Picktask Helper <small style="opacity:.4;font-weight:400;font-size:9px">v1.6.5</small></h3>
         <span id="bpc-st"></span>
         <button class="btn bd" id="btn-help" style="padding:2px 8px;margin-right:2px" title="Quick Guide">💡</button>
         <button class="btn bdbg" id="btn-dbg" style="padding:2px 8px" title="Toggle Debug Log">🐛</button>
@@ -978,8 +978,8 @@
   const ON_PT = () => location.pathname === '/web/picktasks/new';
 
   function init(){
-    dbg('INIT', `v1.6.4 init: path=${location.pathname} WH=${WH}`);
-    console.log('[BulkPack] v1.6.4 Init:', location.pathname, '| WH:', WH);
+    dbg('INIT', `v1.6.5 init: path=${location.pathname} WH=${WH}`);
+    console.log('[BulkPack] v1.6.5 Init:', location.pathname, '| WH:', WH);
     loadFromStorage();
     if(!ON_PT()) return;
     if(document.body){buildPanel();refreshPanel();}
